@@ -55,6 +55,12 @@ if (holdings !== 10) fail(`expected 10 detail rows, got ${holdings}`); else ok('
 await page.locator('.nrow').first().waitFor({ timeout: 45000 });
 ok('news headlines loaded');
 
+const tickerItems = await page.locator('.titem').count();
+if (tickerItems < 300) fail(`ticker tape too small: ${tickerItems} items`); else ok(`ticker tape running (${tickerItems} items)`);
+
+const coords = (await page.locator('#coords').textContent()) || '';
+if (!/°[NS]/.test(coords)) fail(`coordinates readout missing, got "${coords}"`); else ok(`coordinates readout: ${coords}`);
+
 await page.waitForTimeout(TEXTURE_SETTLE_MS); // let earth textures + clouds land
 await page.screenshot({ path: join(OUT, '01-live-dashboard.jpg'), type: 'jpeg', quality: 82 });
 ok('01-live-dashboard.jpg');
@@ -62,11 +68,26 @@ ok('01-live-dashboard.jpg');
 await page.locator('#globeWrap').screenshot({ path: join(OUT, '02-realistic-earth.jpg'), type: 'jpeg', quality: 82 });
 ok('02-realistic-earth.jpg');
 
-// fly to Japan: night side + city lights + selection ring + detail panel swap
+// fly to Japan: night side + city lights + selection ring + arcs + country news
+const newsReq = page.waitForResponse((r) => r.url().includes('/api/news?q=Japan'), { timeout: 20000 }).catch(() => null);
 await page.locator('.crow', { hasText: 'Japan' }).click();
 await page.waitForTimeout(1800);
 const dName = await page.locator('#dName').textContent();
 if (dName !== 'Japan') fail(`detail panel should show Japan, got "${dName}"`); else ok('marker/list selection updates detail panel');
+
+const nr = await newsReq;
+if (!nr || !nr.ok()) fail('country-scoped news request did not fire for Japan');
+else ok('news feed follows the selected country (/api/news?q=Japan)');
+const tabLabel = await page.locator('#newsTabCountry').textContent();
+if (tabLabel !== 'Japan') fail(`country news tab should read Japan, got "${tabLabel}"`); else ok('news tab label tracks selection');
+
+// Global tab pins the world feed
+await page.locator('#newsTabGlobal').click();
+await page.waitForTimeout(800);
+const globalActive = await page.locator('#newsTabGlobal.active').count();
+if (!globalActive) fail('Global news tab did not activate'); else ok('news tabs switch to Global');
+await page.locator('#newsTabCountry').click();
+await page.waitForTimeout(800);
 await page.screenshot({ path: join(OUT, '03-fly-to-japan-night.jpg'), type: 'jpeg', quality: 82 });
 ok('03-fly-to-japan-night.jpg');
 

@@ -2,7 +2,28 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import rss from '../lib/rss.cjs';
 
-const { decode, relTime, parse } = rss;
+const { decode, relTime, parse, sanitizeCountry, newsQuery, feedUrl } = rss;
+
+test('sanitizeCountry allows real country names, strips injection attempts', () => {
+  assert.equal(sanitizeCountry('South Korea'), 'South Korea');
+  assert.equal(sanitizeCountry('  Côte d.Ivoire '), 'Côte d.Ivoire');
+  assert.equal(sanitizeCountry('Japan&ceid=RU:ru'), 'JapanceidRUru'); // no URL metachars survive
+  assert.equal(sanitizeCountry('<script>"x"</script>'), 'scriptxscript');
+  assert.equal(sanitizeCountry('A'.repeat(100)).length, 40);
+  assert.equal(sanitizeCountry(null), '');
+});
+
+test('newsQuery scopes to country or falls back to the global feed', () => {
+  assert.equal(newsQuery('Japan'), '"Japan" AI market OR technology earnings');
+  assert.match(newsQuery(''), /artificial intelligence stocks/);
+});
+
+test('feedUrl encodes the query and pins English results', () => {
+  const url = feedUrl('South Korea');
+  assert.match(url, /^https:\/\/news\.google\.com\/rss\/search\?q=/);
+  assert.ok(url.includes(encodeURIComponent('"South Korea" AI market OR technology earnings')));
+  assert.match(url, /hl=en-US&gl=US&ceid=US:en$/);
+});
 
 test('decode strips CDATA and tags, then unescapes entities', () => {
   assert.equal(decode('<![CDATA[Hello <b>world</b>]]>'), 'Hello world');

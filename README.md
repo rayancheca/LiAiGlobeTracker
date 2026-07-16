@@ -2,10 +2,13 @@
 
 **A live, photoreal 3D Earth that tracks the world's top AI companies.**
 ~180 AI stocks across 18 markets stream through a tiny serverless proxy onto a
-Blue-Marble globe with a **real day/night terminator** — the night side of the
-planet (computed from the actual position of the sun, right now) glows with
-city lights, and markets that are open pulse on the map. Cap-weighted country
-trends, a World AI Index, and a breaking-news feed complete the picture.
+Blue-Marble globe with a **real day/night terminator** (night side lit by city
+lights, computed from the actual position of the sun right now), **live cloud
+cover** from EUMETSAT satellite data refreshed every ~3 hours, and **animated
+market arcs** linking the selected exchange to every other market. Around it: a
+mission-control dashboard — cap-weighted country trends, a World AI Index with
+session sparkline, a 180-ticker tape, per-row price sparklines, live exchange
+clocks, and a news wire that follows whichever country you select.
 
 No build step, no API keys, no dependencies — one HTML file, a handful of ES
 modules, and two Vercel functions.
@@ -19,32 +22,41 @@ driving the real running app with Playwright — live Yahoo Finance quotes, live
 Google News headlines, real WebGL output.
 
 **1 — The dashboard, seconds after load.** Quotes for all 180 symbols have
-arrived (green *Live* dot, top right); the World AI Index and breadth are
-computed cap-weighted in USD; the US is selected with its ping ring and label.
-It's mid-morning in the Americas, so the terminator wraps the Atlantic:
+arrived (LIVE pill, top right) and scroll through the ticker tape; the World AI
+Index (with session sparkline) and breadth micro-bar are computed cap-weighted
+in USD; the US is selected — ping ring, label, coordinates readout, and arcs
+reaching out to every other market. The clouds are today's real weather:
 
 ![Live dashboard](docs/screenshots/01-live-dashboard.jpg)
 
 **2 — The globe up close.** NASA Blue Marble day map, bump-mapped terrain,
-ocean specular, drifting clouds and an atmosphere rim. Marker colour = that
-country's cap-weighted move today (green up / red down / grey flat-or-closed):
+ocean specular, an atmosphere rim — and **live EUMETSAT cloud cover** (that
+tropical storm is really out there right now). Marker colour = that country's
+cap-weighted move today; the reticle brackets and 2px countdown bar frame the
+viewport like an instrument:
 
 ![Realistic Earth](docs/screenshots/02-realistic-earth.jpg)
 
-**3 — Click Japan in the list → the camera flies there.** It's ~11 PM in Tokyo,
-so Japan is on the **night side, lit by real city lights**, and its exchange is
-correctly shown as closed with last-close moves. Every Asian marker sits on its
-country, glowing over the dark hemisphere:
+**3 — Click Japan in the list → the camera flies there** and the arcs re-home
+to Tokyo. It's the middle of the night in Japan, so it sits on the **night
+side, lit by real city lights**, its exchange chip flips to CLOSED with the
+local clock reading ~1 AM — and the news wire switches itself to Japanese
+AI-market headlines:
 
 ![Fly to Japan at night](docs/screenshots/03-fly-to-japan-night.jpg)
 
 **4 — The country detail panel** for that selection: per-company live price in
-local currency, market cap normalised to USD, and today's move — sorted by cap,
-so you can see exactly what's dragging the index:
+local currency, market cap normalised to USD, and today's move — sorted by cap.
+Prices that just ticked carry a decaying underline (terminal-style update
+trace), and once enough refreshes accumulate each row grows a session
+sparkline:
 
 ![Country detail](docs/screenshots/04-country-detail.png)
 
-**5 — Breaking AI-market news**, refreshed every 5 minutes from Google News:
+**5 — The Wire.** Google News headlines on a timeline rail, refreshed every
+5 minutes — **scoped to the selected country** (with a Global tab to pin the
+world feed). Items younger than 15 minutes get an accent node; younger than
+5 minutes, a NEW badge:
 
 ![Breaking news](docs/screenshots/05-breaking-news.png)
 
@@ -55,8 +67,8 @@ clicked):
 
 ![Drag to rotate](docs/screenshots/06-drag-rotate.jpg)
 
-**7 — Mobile.** The layout stacks, the camera auto-fits the globe to the
-narrower panel, and touch drag/pinch work:
+**7 — Mobile.** The layout stacks, the ticker stays, the camera auto-fits the
+globe to the narrower panel, and touch drag/pinch work:
 
 <p align="center">
   <img src="docs/screenshots/07-mobile.jpg" alt="Mobile layout" width="320" />
@@ -118,6 +130,32 @@ shekels. The previous build missed this, so UK stocks were weighted ~128× too
 heavily in the World AI Index and displayed at 100× their price. The proxy now
 normalises minor units server-side (verified against live responses; see
 `MINOR_UNIT` in [`lib/yahoo.cjs`](lib/yahoo.cjs) and the regression tests).
+
+**The clouds are real.** The cloud layer isn't a static texture: it's Matt
+Eason's EUMETSAT-derived live composite (`clouds.matteason.co.uk`, refreshed
+~3-hourly, re-fetched every 2h by long-lived tabs). The raw mosaic is IR-derived
+— thin haze and satellite-seam streaks live in the mid-grays, and the poles are
+no-coverage fill that would render as fake ice caps. Before texturing, the
+image passes through a canvas pipeline: vertical median-of-3 (kills scan-line
+streaks), a geostationary-coverage polar fade (±70° lat), and a levels curve
+(floor cut + gamma) so only genuine cloud structure survives as alpha. Each
+step was tuned against the real downloaded image, and the whole thing degrades
+to a static NASA cloud texture if the live host is unreachable.
+
+**Arcs without a particle library.** Selecting a market rebuilds 17 cubic-Bézier
+great-circle tubes (control points lifted along the chord, higher for longer
+hops) with a ~40-line custom shader: colour is a gradient from the source
+market's trend to each destination's, a pulse travels the length on a per-arc
+phase offset, and a draw-in uniform sweeps them out of the selected marker.
+Geometry and materials are explicitly disposed on every rebuild, and arcs
+opt out of raycasting so they never steal clicks from markers.
+
+**Country news that's actually about the country.** `/api/news?q=Japan` builds
+a Google News query from a template chosen empirically — `"{country}" AI market
+OR technology earnings` beat two alternates across Japan/Korea/Israel/NL test
+feeds (the quoted country name defeats name collisions and generic wire
+reprints). Topics are cached independently server-side (bounded LRU-ish map)
+and client-side, and the tab UI follows your selection with a Global pin.
 
 **Zero-dependency by design.** three.js loads from a pinned CDN via an import
 map whose SHA-256 hash is allow-listed in the CSP (`vercel.json`); textures
@@ -186,8 +224,11 @@ edge caching and the security headers in `vercel.json` all apply automatically.
   `node scripts/update-seeds.mjs`.
 - **FX weighting table** — `FX` in [`lib/market.mjs`](lib/market.mjs). Approximate
   rates used only to normalise caps to USD for weighting, never for display.
-- **Textures** — `TEX` in [`globe.js`](globe.js) (pinned CDN URLs; swap for
-  self-hosted files if you prefer).
+- **Textures** — `TEX` in [`globe.js`](globe.js) (pinned CDN URLs + the live
+  cloud source; swap for self-hosted files if you prefer). The live cloud host
+  must also be allow-listed in the CSP (`vercel.json`).
+- **News scoping** — the per-country query template lives in
+  [`lib/rss.cjs`](lib/rss.cjs) (`newsQuery`).
 
 ## Data sources & disclaimer
 

@@ -14,8 +14,14 @@ const TEX = {
   night: 'https://cdn.jsdelivr.net/npm/three-globe@2/example/img/earth-night.jpg',
   bump: 'https://cdn.jsdelivr.net/npm/three-globe@2/example/img/earth-topology.png',
   water: 'https://cdn.jsdelivr.net/npm/three-globe@2/example/img/earth-water.png',
+  // LIVE cloud cover (EUMETSAT-derived, refreshed ~3-hourly, CORS-clean —
+  // verified 2026-07-16: 458KB, ACAO *, max-age 7200). Grayscale: used as
+  // map + alphaMap. Falls back to a static texture if unreachable.
+  cloudsLive: 'https://clouds.matteason.co.uk/images/2048x1024/clouds.jpg',
   clouds: 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/earth_clouds_1024.png',
+  sky: 'https://cdn.jsdelivr.net/npm/three-globe@2/example/img/night-sky.png',
 };
+const CLOUD_REFRESH_MS = 2 * 60 * 60 * 1000; // matteason cache window
 
 const R = 1;                    // globe radius
 const MARKER_R = 0.016;         // visible dot
@@ -116,22 +122,31 @@ export async function createGlobe({ canvas, wrap, countries, onSelect, isMobile,
     nightUniforms.uSunDirView.value.copy(sunWorld).transformDirection(camera.matrixWorldInverse);
   }
 
-  // ---- starfield ---------------------------------------------------------------
+  // ---- starfield (base layer + twinkling layer over the milky-way sky) ---------
+  let twinkleMat = null;
   {
-    const n = isMobile ? 600 : 1500;
-    const pos = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      const r = 22 + Math.random() * 34, a = Math.random() * Math.PI * 2, b = Math.acos(2 * Math.random() - 1);
-      pos[i * 3] = r * Math.sin(b) * Math.cos(a);
-      pos[i * 3 + 1] = r * Math.cos(b);
-      pos[i * 3 + 2] = r * Math.sin(b) * Math.sin(a);
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    scene.add(new THREE.Points(g, new THREE.PointsMaterial({
-      map: dotTexture(THREE, [255, 255, 255]), color: 0xbfd0e8, size: 0.16,
+    const starTex = dotTexture(THREE);
+    const sprinkle = (n, rMin, rMax) => {
+      const pos = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        const r = rMin + Math.random() * (rMax - rMin), a = Math.random() * Math.PI * 2, b = Math.acos(2 * Math.random() - 1);
+        pos[i * 3] = r * Math.sin(b) * Math.cos(a);
+        pos[i * 3 + 1] = r * Math.cos(b);
+        pos[i * 3 + 2] = r * Math.sin(b) * Math.sin(a);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      return g;
+    };
+    scene.add(new THREE.Points(sprinkle(isMobile ? 700 : 1800, 22, 56), new THREE.PointsMaterial({
+      map: starTex, color: 0xbfd0e8, size: 0.16,
       transparent: true, opacity: 0.7, depthWrite: false, blending: THREE.AdditiveBlending,
     })));
+    twinkleMat = new THREE.PointsMaterial({
+      map: starTex, color: 0xeaf2ff, size: 0.3,
+      transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    scene.add(new THREE.Points(sprinkle(isMobile ? 90 : 220, 20, 44), twinkleMat));
   }
 
   // ---- markers ------------------------------------------------------------------
@@ -155,6 +170,75 @@ export async function createGlobe({ canvas, wrap, countries, onSelect, isMobile,
     hit.position.copy(base); hit.userData.id = c.id;
     markerGroup.add(dot, halo, hit);
     markers.set(c.id, { dot, halo, hit, base, open: false, phase: base.x * 7 + base.y * 3 });
+  }
+
+  // ---- arcs: selected market -> every other market -----------------------------
+  const arcGroup = new THREE.Group();
+  scene.add(arcGroup);
+
+  function arcCurve(from, to) {
+    const spread = from.angleTo(to);
+    const lift = R * (1 + spread * 0.17); // longer hops fly higher, but stay low
+    const c1 = from.clone().lerp(to, 0.25).normalize().multiplyScalar(lift);
+    const c2 = from.clone().lerp(to, 0.75).normalize().multiplyScalar(lift);
+    return new THREE.CubicBezierCurve3(from.clone(), c1, c2, to.clone());
+  }
+
+  function arcMaterial(colFrom, colTo, phase) {
+    return new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uTime: { value: 0 },
+        uPhase: { value: phase },
+        uDraw: { value: reducedMotion ? 1 : 0 },
+        uPulse: { value: reducedMotion ? 0 : 1 },
+        uFrom: { value: new THREE.Color(colFrom) },
+        uTo: { value: new THREE.Color(colTo) },
+      },
+      vertexShader:
+        'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `varying vec2 vUv;
+        uniform float uTime, uPhase, uDraw, uPulse;
+        uniform vec3 uFrom, uTo;
+        void main(){
+          if (vUv.x > uDraw) discard;
+          vec3 col = mix(uFrom, uTo, vUv.x);
+          float head = fract(uTime * 0.18 + uPhase);
+          float pulse = uPulse * smoothstep(0.12, 0.0, abs(vUv.x - head));
+          float ends = smoothstep(0.0, 0.10, vUv.x) * smoothstep(1.0, 0.90, vUv.x);
+          float alpha = (0.13 + 0.55 * pulse) * ends;
+          gl_FragColor = vec4(col * (0.7 + 1.3 * pulse), alpha);
+        }`,
+    });
+  }
+
+  function rebuildArcs(fromId) {
+    for (const mesh of arcGroup.children) { mesh.geometry.dispose(); mesh.material.dispose(); }
+    arcGroup.clear();
+    const src = markers.get(fromId);
+    if (!src) return;
+    let i = 0;
+    for (const [id, m] of markers) {
+      if (id === fromId) continue;
+      const geo = new THREE.TubeGeometry(arcCurve(src.base, m.base), isMobile ? 36 : 56, 0.0022, 6, false);
+      const st = states.get(id) || {};
+      const srcSt = states.get(fromId) || {};
+      const mesh = new THREE.Mesh(geo, arcMaterial(trendColor(srcSt.trend), trendColor(st.trend), i * 0.059));
+      mesh.userData.destId = id;
+      mesh.raycast = () => {}; // arcs are decoration — never intercept picking
+      arcGroup.add(mesh);
+      i++;
+    }
+  }
+
+  function recolorArcs() {
+    const srcCol = new THREE.Color(trendColor((states.get(selectedId) || {}).trend));
+    for (const mesh of arcGroup.children) {
+      mesh.material.uniforms.uFrom.value.copy(srcCol);
+      mesh.material.uniforms.uTo.value.set(trendColor((states.get(mesh.userData.destId) || {}).trend));
+    }
   }
 
   // selection ping ring, re-parented onto the selected marker
@@ -313,15 +397,103 @@ export async function createGlobe({ canvas, wrap, countries, onSelect, isMobile,
     if (!t) return;
     earthMat.specularMap = t; earthMat.needsUpdate = true;
   });
+  // Clouds: live EUMETSAT cover first (grayscale JPG as map+alphaMap so the
+  // dark sky reads as transparency), static texture as fallback. The live
+  // layer re-fetches every ~2h so long-lived tabs track real weather.
   let clouds = null;
-  load(TEX.clouds).then((t) => {
+  function mountClouds(t, isLive) {
+    t.colorSpace = THREE.SRGBColorSpace;
+    if (clouds) {
+      const old = clouds.material;
+      clouds.material = cloudMaterial(t, isLive);
+      old.map?.dispose(); old.dispose();
+      return;
+    }
+    clouds = new THREE.Mesh(new THREE.SphereGeometry(R * 1.008, segments, segments), cloudMaterial(t, isLive));
+    scene.add(clouds);
+  }
+  function cloudMaterial(t, isLive) {
+    return new THREE.MeshLambertMaterial(
+      isLive
+        ? { color: 0xffffff, map: t, alphaMap: t, transparent: true, opacity: 0.88, depthWrite: false }
+        : { map: t, transparent: true, opacity: 0.85, depthWrite: false }
+    );
+  }
+  // The live EUMETSAT composite is an IR-derived grayscale where thin haze and
+  // mosaic-seam streaks sit in the mid-grays. Run it through a levels curve
+  // (floor cut + gamma) on a canvas before texturing, so only real cloud
+  // structure survives as alpha.
+  function loadLiveClouds() {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.width; c.height = img.height;
+          const g = c.getContext('2d', { willReadFrequently: true });
+          g.drawImage(img, 0, 0);
+          const d = g.getImageData(0, 0, c.width, c.height);
+          const px = d.data;
+          const W = c.width, H = c.height;
+          // pass 1: vertical median-of-3 kills the horizontal scan-line streaks
+          // that appear along satellite mosaic seams (real clouds are taller
+          // than 1px, so they survive)
+          const median = new Uint8ClampedArray(W * H);
+          for (let y = 0; y < H; y++) {
+            const yUp = Math.max(0, y - 1) * W, yDn = Math.min(H - 1, y + 1) * W, yMid = y * W;
+            for (let x = 0; x < W; x++) {
+              const a = px[(yUp + x) * 4], b = px[(yMid + x) * 4], cc = px[(yDn + x) * 4];
+              median[yMid + x] = a > b ? (b > cc ? b : (a > cc ? cc : a)) : (a > cc ? a : (b > cc ? cc : b));
+            }
+          }
+          // pass 2: geostationary satellites only cover ~±70° latitude — the
+          // polar rows are no-data fill that would render as fake ice caps.
+          // Fade them out. Then a levels curve: cut the haze floor, gamma mids.
+          const polarFade = (y) => {
+            const top = H * 0.115, bot = H * 0.885, ramp = H * 0.05;
+            if (y < top) return Math.max(0, (y - (top - ramp)) / ramp);
+            if (y > bot) return Math.max(0, (bot + ramp - y) / ramp);
+            return 1;
+          };
+          const FLOOR = 64, GAMMA = 1.35;
+          for (let y = 0, i = 0, p = 0; y < H; y++) {
+            const pf = polarFade(y);
+            for (let x = 0; x < W; x++, i++, p += 4) {
+              const t = Math.max(0, median[i] - FLOOR) / (255 - FLOOR);
+              const v = Math.round(255 * Math.pow(t, GAMMA) * pf);
+              px[p] = px[p + 1] = px[p + 2] = v;
+            }
+          }
+          g.putImageData(d, 0, 0);
+          mountClouds(new THREE.CanvasTexture(c), true);
+          resolve(true);
+        } catch { resolve(false); }
+      };
+      img.onerror = () => resolve(false);
+      img.src = TEX.cloudsLive;
+    });
+  }
+  loadLiveClouds().then((liveOk) => {
+    if (!liveOk) load(TEX.clouds).then((t) => { if (t) mountClouds(t, false); });
+    else setInterval(loadLiveClouds, CLOUD_REFRESH_MS);
+  });
+
+  // Milky-way backdrop (subtle, behind everything; procedural stars add depth)
+  load(TEX.sky).then((t) => {
     if (!t) return;
     t.colorSpace = THREE.SRGBColorSpace;
-    clouds = new THREE.Mesh(
-      new THREE.SphereGeometry(R * 1.008, segments, segments),
-      new THREE.MeshLambertMaterial({ map: t, transparent: true, opacity: 0.85, depthWrite: false })
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(R * 12, 32, 32),
+      new THREE.MeshBasicMaterial({
+        map: t, side: THREE.BackSide, transparent: true, opacity: 0.55,
+        depthWrite: false, color: 0xaebeff,
+      })
     );
-    scene.add(clouds);
+    sky.renderOrder = -1;
+    sky.matrixAutoUpdate = false;
+    sky.updateMatrix();
+    scene.add(sky);
   });
 
   // Old stylised look as a fallback so a blocked CDN still looks intentional.
@@ -380,6 +552,7 @@ export async function createGlobe({ canvas, wrap, countries, onSelect, isMobile,
 
     updateSun();
     if (clouds && !reducedMotion) clouds.rotation.y += dt * 0.006;
+    if (twinkleMat && !reducedMotion) twinkleMat.opacity = 0.35 + 0.3 * Math.sin(t * 1.4) * Math.sin(t * 0.53 + 2);
 
     for (const [id, m] of markers) {
       const pulse = !reducedMotion && m.open ? 1.25 + 0.3 * Math.sin(t * 2.4 + m.phase) : 1.05;
@@ -391,6 +564,11 @@ export async function createGlobe({ canvas, wrap, countries, onSelect, isMobile,
       const k = reducedMotion ? 0.5 : (t % 1.6) / 1.6;
       ring.scale.setScalar(1 + k * 1.1);
       ring.material.opacity = 0.85 * (1 - k);
+    }
+    for (const mesh of arcGroup.children) {
+      const u = mesh.material.uniforms;
+      u.uTime.value = t;
+      if (u.uDraw.value < 1) u.uDraw.value = Math.min(1, u.uDraw.value + dt * 1.1);
     }
 
     stepFlight(now);
@@ -412,8 +590,10 @@ export async function createGlobe({ canvas, wrap, countries, onSelect, isMobile,
         m.halo.material.color.copy(col);
       }
       if (selectedId) overlayText(label, selectedId);
+      recolorArcs();
     },
     setSelected(id) {
+      const changed = id !== selectedId;
       selectedId = id;
       const m = markers.get(id);
       if (m) {
@@ -422,8 +602,10 @@ export async function createGlobe({ canvas, wrap, countries, onSelect, isMobile,
         ring.lookAt(m.base.clone().multiplyScalar(2));
         ring.material.color.set(trendColor((states.get(id) || {}).trend));
         overlayText(label, id);
+        if (changed || !arcGroup.children.length) rebuildArcs(id);
       } else {
         ring.visible = false;
+        rebuildArcs(null);
       }
     },
     focus,

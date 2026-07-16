@@ -1,89 +1,146 @@
 # trackAImarket 🌐
 
-A live 3D globe that tracks the world's top AI companies across 18 markets —
-streaming real prices, a **market-cap-weighted** up/down trend for each country,
-and breaking AI-market news.
+**A live 3D globe that tracks the world's top AI companies** — streaming real
+prices across 18 markets, a **market-cap-weighted** up/down trend for each
+country, and a breaking AI-market news feed.
+
+![trackAImarket desktop](docs/preview-desktop.png)
+
+<p align="center">
+  <img src="docs/preview-mobile.png" alt="trackAImarket mobile" width="320" />
+</p>
+
+---
+
+## Table of contents
+
+- [What it does](#what-it-does)
+- [Why this version is actually live](#why-this-version-is-actually-live-the-fix)
+- [How it works](#how-it-works)
+- [Project layout](#project-layout)
+- [Deploy it free](#deploy-it-free)
+- [Local development](#local-development)
+- [Configuration](#configuration)
+- [Data sources & disclaimer](#data-sources--disclaimer)
 
 ---
 
 ## What it does
 
-- **3D globe** (Three.js) with a glowing marker per country. Marker colour = that
-  country's cap-weighted move today (green up / red down). Markers pulse while
-  the local market is **open**.
-- **Live prices** for ~180 AI companies, refreshed every ~45 seconds.
-- **Cap-weighted country trend** — bigger companies move the country index more.
-- **Market-hours aware** — countries whose exchange is closed are labelled
-  `MARKET CLOSED` and show their last-close move instead of pretending to stream.
-- **Breaking news** — a global AI-market headline feed.
-- **Graceful degradation** — if a device can't run WebGL (or the Three.js CDN is
-  unreachable), the globe hides itself and the live data / country list / news
-  keep working.
+| Feature | Detail |
+| --- | --- |
+| 🌍 **3D globe** | A Three.js globe with one glowing marker per country. Marker **colour = today's cap-weighted move** (green up / red down); markers **pulse while that market is open**. Drag to rotate, tap a marker or a country. |
+| 📈 **Live prices** | ~180 AI companies across 18 countries, refreshed every **~45 seconds** with a visible countdown. |
+| ⚖️ **Cap-weighted trends** | Each country's index is weighted by market cap, so the big players move it more (caps normalised to USD for consistency). |
+| 🕒 **Market-hours aware** | Closed exchanges are labelled `MARKET CLOSED` and show their **last-close** move instead of faking a live stream. |
+| 📰 **Breaking news** | A global AI-market headline feed (Google News), refreshed every 5 minutes. |
+| 📱 **Responsive** | A lighter globe + stacked layout on phones. |
+| 🛟 **Graceful fallback** | If a device can't run WebGL (or the Three.js CDN is blocked), the globe hides itself and the live data / country list / news keep working. |
 
 ## Why this version is actually live (the fix)
 
-The original build fetched Yahoo Finance directly from the browser through free
-public CORS proxies. Those proxies constantly failed, so the app silently fell
-back to a random-walk **simulation** (its own badge read *"Real-time
-simulation"*). That's why the data looked static/fake.
+The original build fetched Yahoo Finance **directly from the browser** through
+free public CORS proxies. Those proxies constantly failed, so the app silently
+fell back to a random-walk **simulation** — its own badge literally read
+*"Real-time simulation."* That's why the data looked static and fake.
 
-This version adds a tiny server-side **helper** (two serverless functions) that:
-
-1. calls Yahoo Finance **server-side** (no CORS, proper cookie+crumb auth),
-2. batches all symbols into a couple of requests,
-3. is **cached at the CDN edge** (`s-maxage`) so Yahoo is never hammered, and
-4. returns real price / % change / **market cap** / **market state** per symbol.
-
-No API key required. It's free/best-effort: when a symbol or the feed is
-temporarily unavailable it falls back to the last good value.
-
-## Architecture
+This version moves the data fetching to a tiny server-side **helper** (two
+serverless functions), so the numbers are real:
 
 ```
-index.html        static frontend (globe + UI), dataset embedded inline
-app.js            frontend logic (loads Three.js from a pinned CDN, polls /api)
-api/quotes.js     serverless: Yahoo Finance quotes (crumb auth, batched, edge-cached 45s)
-api/news.js       serverless: Google News RSS -> JSON (edge-cached 5m)
-vercel.json       function config
+Before ❌   browser ──▶ public CORS proxy ──▶ Yahoo   (flaky ⇒ falls back to fake simulation)
+After  ✅   browser ──▶ /api/quotes (our server) ──▶ Yahoo   (auth + batched + edge-cached ⇒ real)
 ```
 
-The frontend is a single static file plus one small JS module; the "helper" is
-the two `/api` functions. Everything runs on a free Vercel (or Netlify) tier.
+The helper:
 
-## Deploy (free)
+1. calls Yahoo Finance **server-side** (no CORS, proper cookie + crumb auth),
+2. **batches** all ~180 symbols into a couple of requests,
+3. is **cached at the CDN edge** (`s-maxage`) so Yahoo is never hammered even
+   with many visitors, and
+4. returns real **price / % change / market cap / market state** per symbol.
 
-### Vercel (recommended)
+**No API key required.** It's free / best-effort: if a symbol or the feed is
+briefly unavailable, it falls back to the last good value.
+
+## How it works
+
+```
+                 ┌──────────────────────────────┐
+                 │  index.html + app.js         │
+   Browser  ◀────│  • 3D globe (Three.js/CDN)   │
+                 │  • country list + detail     │
+                 │  • news panel                │
+                 └───────┬───────────────┬──────┘
+                         │ /api/quotes   │ /api/news
+                         ▼               ▼
+                 ┌───────────────┐ ┌───────────────┐
+                 │ Yahoo Finance │ │  Google News  │
+                 │ (v7 quote)    │ │  (RSS)        │
+                 └───────────────┘ └───────────────┘
+```
+
+- **`/api/quotes`** returns `{ SYM: { price, changePct, cap, state, cur, name } }`.
+  `state === "REGULAR"` means the market is open; `cap` drives the cap-weighting.
+- **`/api/news`** returns `{ items: [{ title, source, url, time }] }`.
+- The frontend computes each country's trend as
+  `Σ(changePct × capUSD) / Σ(capUSD)` and colours the globe marker accordingly.
+
+## Project layout
+
+```
+index.html        Static frontend (globe + UI). The company dataset is embedded inline.
+app.js            Frontend logic — loads Three.js from a pinned CDN, polls the /api helpers.
+api/quotes.js     Serverless: Yahoo Finance quotes (cookie+crumb auth, batched, edge-cached 45s).
+api/news.js       Serverless: Google News RSS → JSON (edge-cached 5m).
+vercel.json       Serverless function config.
+docs/             Screenshots used in this README.
+```
+
+## Deploy it free
+
+### Vercel (recommended — static site + `/api` functions, zero config)
+
+**Dashboard:** import the repo at <https://vercel.com/new> → **Deploy**. Done.
+
+**CLI:**
 ```bash
 npm i -g vercel
-vercel            # first run links/creates the project
-vercel --prod     # ship it -> gives you https://<name>.vercel.app
+vercel --prod      # logs in via browser, gives you https://<name>.vercel.app
 ```
-Or import the GitHub repo at <https://vercel.com/new> — zero config, static site
-+ `/api` functions are detected automatically.
-
-### Netlify
-Static hosting works out of the box. The `/api` functions would need to be moved
-to `netlify/functions/` (Netlify uses a different handler signature) — see the
-handlers in `api/` for the logic to port.
 
 ### Custom domain
-Point `trackAImarket.com` at the deployment in the host's Domains settings once
-you own it. Until then the free `*.vercel.app` URL works fine.
+Once you own `trackAImarket.com`, add it under the project's **Domains**
+settings. Until then the free `*.vercel.app` URL works fine.
+
+### Netlify
+The static frontend works as-is. The `/api` helpers are written for Vercel's
+Node handler signature, so to run them on Netlify move them to
+`netlify/functions/` and adapt the handler (`exports.handler = async (event) => …`).
 
 ## Local development
 
-`vercel dev` runs the static site and the `/api` functions together at
-http://localhost:3000.
+`vercel dev` runs the static site and both `/api` functions together at
+<http://localhost:3000>.
 
-## Editing the company list
+## Configuration
 
-The tracked universe lives inline in `index.html` as `window.COUNTRIES`
-(`{ id, name, code, lat, lon, companies:[{ n:name, s:yahooSymbol, p:seedPrice, ch:seedChange }] }`).
-Add or remove companies there — symbols must be in **Yahoo Finance** format
-(e.g. `NVDA`, `2330.TW`, `ASML.AS`, `005930.KS`).
+- **Refresh cadence** — `REFRESH_MS` in `app.js` (default 45 000 ms).
+- **Tracked companies** — the `window.COUNTRIES` array inline in `index.html`:
 
-## Disclaimer
+  ```js
+  { id:"us", name:"United States", code:"US", lat:39.8283, lon:-98.5795,
+    companies:[ { n:"NVIDIA", s:"NVDA", p:142.3, ch:2.34 }, /* … */ ] }
+  ```
 
-Data is sourced best-effort from public Yahoo Finance endpoints and may be
-delayed or occasionally unavailable. For information only — **not investment
-advice**.
+  `s` is the **Yahoo Finance symbol** — international tickers need their exchange
+  suffix (e.g. `2330.TW`, `ASML.AS`, `005930.KS`, `9984.T`). `p`/`ch` are seed
+  values for the very first paint and are replaced by live data on load.
+- **FX weighting table** — `FX` in `app.js` (approximate rates, used only to
+  normalise market caps for weighting, never for display).
+
+## Data sources & disclaimer
+
+Prices come best-effort from public **Yahoo Finance** endpoints and news from
+**Google News**; both may be delayed or occasionally unavailable. This project
+is for information and demonstration only — **not investment advice**.

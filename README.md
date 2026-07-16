@@ -16,8 +16,9 @@ and breaking AI-market news.
 - **Market-hours aware** — countries whose exchange is closed are labelled
   `MARKET CLOSED` and show their last-close move instead of pretending to stream.
 - **Breaking news** — a global AI-market headline feed.
-- **Graceful degradation** — if a device can't run WebGL, the globe hides itself
-  and the live data / country list / news keep working.
+- **Graceful degradation** — if a device can't run WebGL (or the Three.js CDN is
+  unreachable), the globe hides itself and the live data / country list / news
+  keep working.
 
 ## Why this version is actually live (the fix)
 
@@ -40,8 +41,7 @@ temporarily unavailable it falls back to the last good value.
 
 ```
 index.html        static frontend (globe + UI), dataset embedded inline
-app.js            frontend logic (loads Three.js from /vendor, polls /api)
-vendor/           self-hosted Three.js + OrbitControls (no external CDN at runtime)
+app.js            frontend logic (loads Three.js from a pinned CDN, polls /api)
 api/quotes.js     serverless: Yahoo Finance quotes (crumb auth, batched, edge-cached 45s)
 api/news.js       serverless: Google News RSS -> JSON (edge-cached 5m)
 vercel.json       function config

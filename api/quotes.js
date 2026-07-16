@@ -8,6 +8,8 @@
 //
 // Response: { ok, updated, stale, quotes: { SYM: {price, changePct, cap, state, cur, name} } }
 
+const { shape, pick, parseSymbols } = require('../lib/yahoo.cjs');
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -61,21 +63,6 @@ async function fetchChunk(symbols, creds) {
   return (j.quoteResponse && j.quoteResponse.result) || [];
 }
 
-function shape(q) {
-  let changePct = q.regularMarketChangePercent;
-  if (typeof changePct !== 'number' && q.regularMarketPrice && q.regularMarketPreviousClose) {
-    changePct = ((q.regularMarketPrice - q.regularMarketPreviousClose) / q.regularMarketPreviousClose) * 100;
-  }
-  return {
-    price: q.regularMarketPrice ?? null,
-    changePct: typeof changePct === 'number' ? +changePct.toFixed(2) : null,
-    cap: q.marketCap ?? null,
-    state: q.marketState || 'CLOSED',     // REGULAR = open
-    cur: q.currency || 'USD',
-    name: q.shortName || q.longName || q.symbol,
-  };
-}
-
 async function fetchQuotes(symbols) {
   let creds = await ensureCreds(false);
   const out = {};
@@ -98,8 +85,7 @@ module.exports = async (req, res) => {
   // Edge-cache: everyone shares one fetch for ~45s; serve stale while refreshing.
   res.setHeader('Cache-Control', 'public, s-maxage=45, stale-while-revalidate=120');
 
-  const raw = (req.query && req.query.symbols) || '';
-  const symbols = String(raw).split(',').map((s) => s.trim()).filter(Boolean).slice(0, 300);
+  const symbols = parseSymbols(req.query && req.query.symbols);
   if (!symbols.length) { res.status(400).json({ ok: false, error: 'no symbols' }); return; }
 
   const now = Date.now();
@@ -126,9 +112,3 @@ module.exports = async (req, res) => {
     }
   }
 };
-
-function pick(map, keys) {
-  const o = {};
-  for (const k of keys) if (map[k]) o[k] = map[k];
-  return o;
-}

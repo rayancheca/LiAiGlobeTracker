@@ -1,0 +1,8 @@
+# Keep the deployment to what the site actually serves.
+# NOTE: lib/ must ship — the browser imports lib/market.mjs and the
+# api functions require lib/*.cjs at build-trace time.
+docs
+scripts
+tests
+.claude
+README.md

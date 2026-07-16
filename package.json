@@ -1,0 +1,12 @@
+{
+  "name": "trackaimarket",
+  "private": true,
+  "description": "Live 3D globe tracking the world's top AI companies — real prices, cap-weighted country trends, breaking news.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "test": "node --test \"tests/*.test.mjs\""
+  }
+}
